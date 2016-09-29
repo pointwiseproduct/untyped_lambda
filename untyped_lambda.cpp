@@ -1051,7 +1051,7 @@ int main(int argc, char *argv[]){
             if(program_swtich_b){
                 std::cout << "-> ";
             }
-            std::cout << q->to_str() << std::endl;
+            std::cout << q->to_str() << "." << std::endl;
             if(program_swtich_s){
                 getch();
             }

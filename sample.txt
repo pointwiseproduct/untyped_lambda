@@ -1,0 +1,16 @@
+0 = /f x. x.
+1 = /f x. f x.
+2 = /f x. f (f x).
+3 = /f x. f (f (f x)).
+succ = /n f x. f (n f x).
+add = /m n. m succ n.
+mul = /m n. m (add n) 0.
+pre = /n f x. n (/g h. h (g f)) (/u. x) (/u. u).
+tru = /x y. x.
+fls = /x y. y.
+& = /p q. p q fls.
+| = /p q. p tru q.
+if = /p x y. p x y.
+iszero = /n. n (/x. fls) tru.
+add 3 3.
+
