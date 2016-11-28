@@ -50,7 +50,7 @@ std::string wstring_to_string(std::wstring str){
 // ファイルの有無をチェックする．
 void check_file_exist(const fs::path &path){
     if(!fs::exists(path)){
-        throw no_file_exist(wstring_to_string(path.c_str()));
+        throw no_file_exist(path.c_str());
     }
 }
 
@@ -71,7 +71,7 @@ std::vector<char> open_file(const fs::path &path){
         ifile.read(&r[0], size);
         return r;
     }catch(fs::filesystem_error ex){
-        throw open_file_exception(wstring_to_string(path.c_str()), ex.what());
+        throw open_file_exception(path.c_str(), ex.what());
     }catch(...){
         throw app_exception();
     }
@@ -524,7 +524,7 @@ namespace internal_data{
     struct lambda : public expr{
         lambda() : seq(new sequence){}
 
-        kind lambda::get_kind() const{
+        kind get_kind() const{
             return kind::lambda;
         }
 
@@ -684,7 +684,8 @@ namespace internal_data{
                         }
                     }
                     --nest_level;
-                    seq->vec[0].swap(std::unique_ptr<expr>(f->copy()));
+                    std::unique_ptr<expr> tmp(f->copy());
+                    seq->vec[0].swap(tmp);
                     if(seq->vec[0]->get_kind() == expr::kind::lambda){
                         continue;
                     }else{
@@ -1077,8 +1078,6 @@ void launch_interpreter(){
 }
 
 int main(int argc, char *argv[]){
-    std::setlocale(LC_CTYPE, std::locale().c_str());
-
     if(argc <= 1){
         launch_interpreter();
         return 0;
