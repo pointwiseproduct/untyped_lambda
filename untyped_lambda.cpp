@@ -50,7 +50,11 @@ std::string wstring_to_string(std::wstring str){
 // ファイルの有無をチェックする．
 void check_file_exist(const fs::path &path){
     if(!fs::exists(path)){
+#ifdef _MSC_VER
+        throw no_file_exist(wstring_to_string(path.c_str()));
+#else
         throw no_file_exist(path.c_str());
+#endif
     }
 }
 
@@ -71,7 +75,11 @@ std::vector<char> open_file(const fs::path &path){
         ifile.read(&r[0], size);
         return r;
     }catch(fs::filesystem_error ex){
+#ifdef _MSC_VER
+        throw open_file_exception(wstring_to_string(path.c_str()), ex.what());
+#else
         throw open_file_exception(path.c_str(), ex.what());
+#endif
     }catch(...){
         throw app_exception();
     }
@@ -629,7 +637,7 @@ namespace internal_data{
                 if(kind == expr::kind::lambda){
                     lambda &lam = static_cast<lambda&>(*static_cast<lambda*>(seq->vec[0].get()));
                     std::unique_ptr<expr> &lam_expr = seq->vec[0];
-                    std::size_t s = seq->vec.size() - 1;
+                    std::size_t s = (std::min)(lam.variable_seq.size(), seq->vec.size() - 1);
                     expr::variable_map map;
                     if(lam.variable_seq.size() <= s){
                         for(std::size_t i = 0; i < lam.variable_seq.size(); ++i){
@@ -714,31 +722,6 @@ namespace internal_data{
                     }
                 }else{
                     e.swap(*seq->vec.begin());
-                }
-            }else if(e->get_kind() == expr::kind::lambda){
-                lambda *lam = static_cast<lambda*>(e.get());
-                ++nest_level;
-                if(eval(lam->seq, nest_level, step)){
-                    if(step){
-                        throw step_out();
-                    }
-                }
-                --nest_level;
-                if(lam->seq->get_kind() != expr::kind::sequence){
-                    std::unique_ptr<expr> seq(new sequence);
-                    static_cast<sequence*>(seq.get())->vec.push_back(std::move(static_cast<lambda*>(e.get())->seq));
-                    lam->seq.swap(seq);
-                }else{
-                    sequence *seq = static_cast<sequence*>(lam->seq.get());
-                    for(auto iter = seq->vec.begin(); iter != seq->vec.end(); ++iter){
-                        ++nest_level;
-                        if(eval(*iter, nest_level, step)){
-                            if(step){
-                                throw step_out();
-                            }
-                        }
-                        --nest_level;
-                    }
                 }
             }
         }else if(e->get_kind() == expr::kind::lambda){
