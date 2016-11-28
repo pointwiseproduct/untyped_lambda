@@ -8,11 +8,15 @@
 #include <set>
 #include <map>
 #include <tuple>
-#include <conio.h>
 #include <clocale>
 #include <cstdlib>
 #include <boost/filesystem.hpp>
 #include <boost/optional.hpp>
+
+#ifdef _MSC_VER
+#include <conio.h>
+#endif
+
 namespace fs = boost::filesystem;
 
 // プログラムスイッチ．
@@ -409,7 +413,7 @@ namespace internal_data{
 
         virtual kind get_kind() const = 0;
         virtual expr *copy() const = 0;
-        virtual expr *replace(const variable_map&, const expr_lookup_table&) const = 0;
+        virtual expr *replace(const variable_map&, const expr_lookup_table&, bool &mod) const = 0;
         virtual std::string to_str() const = 0;
         virtual bool equal(const expr*) const = 0;
         virtual ~expr() = default;
@@ -426,13 +430,15 @@ namespace internal_data{
             return r;
         }
 
-        expr *replace(const variable_map &map, const expr_lookup_table &global_map) const override{
+        expr *replace(const variable_map &map, const expr_lookup_table &global_map, bool &mod) const override{
             auto iter = map.find(str);
             if(iter != map.end()){
+                mod = true;
                 return iter->second->copy();
             }else{
                 auto jter = global_map.find(str);
                 if(jter != global_map.end()){
+                    mod = true;
                     return jter->second->copy();
                 }else{
                     return copy();
@@ -466,10 +472,10 @@ namespace internal_data{
             return r;
         }
 
-        expr *replace(const variable_map &map, const expr_lookup_table &global_map) const override{
+        expr *replace(const variable_map &map, const expr_lookup_table &global_map, bool &mod) const override{
             sequence *r = new sequence;
             for(auto iter = vec.begin(); iter != vec.end(); ++iter){
-                r->push_back(std::move(std::unique_ptr<expr>((*iter)->replace(map, global_map))));
+                r->push_back(std::move(std::unique_ptr<expr>((*iter)->replace(map, global_map, mod))));
             }
             return r;
         }
@@ -518,11 +524,11 @@ namespace internal_data{
     struct lambda : public expr{
         lambda() : seq(new sequence){}
 
-        kind get_kind() const override{
+        kind lambda::get_kind() const{
             return kind::lambda;
         }
 
-        expr *copy() const override{
+        expr *copy() const{
             lambda *r = new lambda;
             for(auto iter = variable_seq.begin(); iter != variable_seq.end(); ++iter){
                 variable v;
@@ -535,24 +541,29 @@ namespace internal_data{
             return r;
         }
 
-        expr *replace(const variable_map &map, const expr_lookup_table &global_map) const override{
-            variable_map droped_map = map;
+        variable_map make_dropped_map(const variable_map &map) const{
+            variable_map dropped_map = map;
             for(const variable &var_seq_iter : variable_seq){
-                auto iter = droped_map.find(var_seq_iter.str);
-                if(iter != droped_map.end()){
-                    droped_map.erase(iter);
+                auto iter = dropped_map.find(var_seq_iter.str);
+                if(iter != dropped_map.end()){
+                    dropped_map.erase(iter);
                 }
             }
+            return std::move(dropped_map);
+        }
+
+        expr *replace(const variable_map &map, const expr_lookup_table &global_map, bool &mod) const{
+            variable_map dropped_map = make_dropped_map(map);
             lambda *lam = new lambda;
             lam->variable_seq = variable_seq;
             std::unique_ptr<expr> seq_prime(seq->copy());
             lam->seq.swap(seq_prime);
-            std::unique_ptr<expr> f(seq->replace(droped_map, global_map));
-            f.swap(seq);
+            std::unique_ptr<expr> f(seq->replace(dropped_map, global_map, mod));
+            f.swap(lam->seq);
             return lam;
         }
 
-        std::string to_str() const override{
+        std::string to_str() const{
             std::string r;
             r += "/";
             std::size_t count = 0;
@@ -568,7 +579,7 @@ namespace internal_data{
             return std::move(r);
         }
 
-        virtual bool equal(const expr *other) const{
+        bool equal(const expr *other) const{
             if(other->get_kind() != expr::kind::lambda){
                 return false;
             }
@@ -599,6 +610,7 @@ namespace internal_data{
 
         std::vector<variable> variable_seq;
         mutable std::unique_ptr<expr> seq;
+
         sequence *get_seq() const{
             return static_cast<sequence*>(seq.get());
         }
@@ -606,8 +618,9 @@ namespace internal_data{
 
     expr::expr_lookup_table assignment_table;
 
-    bool eval(std::unique_ptr<expr> &e, int &nest_level){
-        static bool show_step = program_switchs.find("-t") != program_switchs.end();
+    struct step_out{};
+
+    bool eval(std::unique_ptr<expr> &e, int &nest_level, bool step = false){
         bool mod = false;
         if(e->get_kind() == expr::kind::sequence){
             while(true){
@@ -623,10 +636,12 @@ namespace internal_data{
                             map.insert(std::make_pair(lam.variable_seq[i].str, seq->vec[i + 1].get()));
                         }
                         {
-                            expr *f = lam.seq->replace(map, assignment_table);
-                            mod = true;
+                            expr *f = lam.seq->replace(map, assignment_table, mod);
                             seq->vec.erase(seq->vec.begin(), seq->vec.begin() + s + 1);
                             seq->vec.insert(seq->vec.begin(), std::move(std::unique_ptr<expr>(f)));
+                        }
+                        if(step && mod){
+                            throw step_out();
                         }
                         if(seq->vec.size() > 1){
                             continue;
@@ -634,7 +649,10 @@ namespace internal_data{
                             std::unique_ptr<expr> f(std::move(*seq->vec.begin()));
                             *seq->vec.begin() = nullptr;
                             e.swap(f);
-                            if(eval(e, nest_level)){
+                            if(eval(e, nest_level, step)){
+                                if(step){
+                                    throw step_out();
+                                }
                                 mod = false;
                             }
                             break;
@@ -643,8 +661,7 @@ namespace internal_data{
                         for(std::size_t i = 0; i < s; ++i){
                             map.insert(std::make_pair(lam.variable_seq[i].str, seq->vec[i + 1].get()));
                         }
-                        std::unique_ptr<expr> f(lam.seq->replace(map, assignment_table));
-                        mod = true;
+                        std::unique_ptr<expr> f(lam.seq->replace(map, assignment_table, mod));
                         if(f->get_kind() == expr::kind::sequence){
                             lam.seq.swap(f);
                         }else{
@@ -653,12 +670,19 @@ namespace internal_data{
                         }
                         lam.variable_seq.erase(lam.variable_seq.begin(), lam.variable_seq.begin() + s);
                         e.swap(lam_expr);
+                        if(step){
+                            throw step_out();
+                        }
                         break;
                     }
                 }else if(kind == expr::kind::sequence){
                     std::unique_ptr<expr> &f(seq->vec[0]);
                     ++nest_level;
-                    eval(f, nest_level);
+                    if(eval(f, nest_level, step)){
+                        if(step){
+                            throw step_out();
+                        }
+                    }
                     --nest_level;
                     seq->vec[0].swap(std::unique_ptr<expr>(f->copy()));
                     if(seq->vec[0]->get_kind() == expr::kind::lambda){
@@ -680,7 +704,11 @@ namespace internal_data{
                 if(seq->vec.size() > 1){
                     for(auto iter = seq->vec.begin(); iter != seq->vec.end(); ++iter){
                         ++nest_level;
-                        eval(*iter, nest_level);
+                        if(eval(*iter, nest_level, step)){
+                            if(step){
+                                throw step_out();
+                            }
+                        }
                         --nest_level;
                     }
                 }else{
@@ -689,7 +717,11 @@ namespace internal_data{
             }else if(e->get_kind() == expr::kind::lambda){
                 lambda *lam = static_cast<lambda*>(e.get());
                 ++nest_level;
-                eval(lam->seq, nest_level);
+                if(eval(lam->seq, nest_level, step)){
+                    if(step){
+                        throw step_out();
+                    }
+                }
                 --nest_level;
                 if(lam->seq->get_kind() != expr::kind::sequence){
                     std::unique_ptr<expr> seq(new sequence);
@@ -699,7 +731,11 @@ namespace internal_data{
                     sequence *seq = static_cast<sequence*>(lam->seq.get());
                     for(auto iter = seq->vec.begin(); iter != seq->vec.end(); ++iter){
                         ++nest_level;
-                        eval(*iter, nest_level);
+                        if(eval(*iter, nest_level, step)){
+                            if(step){
+                                throw step_out();
+                            }
+                        }
                         --nest_level;
                     }
                 }
@@ -707,7 +743,11 @@ namespace internal_data{
         }else if(e->get_kind() == expr::kind::lambda){
             lambda *lam = static_cast<lambda*>(e.get());
             ++nest_level;
-            eval(lam->seq, nest_level);
+            if(eval(lam->seq, nest_level, step)){
+                if(step){
+                    throw step_out();
+                }
+            }
             --nest_level;
             if(lam->seq->get_kind() != expr::kind::sequence){
                 std::unique_ptr<expr> seq(new sequence);
@@ -779,7 +819,7 @@ namespace parsing_phase{
     token_seq_type::const_iterator sequence(token_seq_type::const_iterator first, std::unique_ptr<internal_data::expr> &seq){
         token_seq_type::const_iterator iter = first;
         token_seq_type::const_iterator result = expr(seq, iter);
-        if(seq->get_kind() != internal_data::expr::kind::sequence){
+        if(result != first && seq->get_kind() != internal_data::expr::kind::sequence){
             internal_data::sequence *wrapper_seq = new internal_data::sequence;
             std::unique_ptr<internal_data::expr> wrapper(wrapper_seq);
             wrapper_seq->push_back(std::move(seq));
@@ -988,11 +1028,63 @@ public:
     ~parsing_failed() override = default;
 };
 
+int waiting(){
+#ifdef _MSC_VER
+    return getch();
+#else
+    return getchar();
+#endif
+}
+
+void launch_interpreter(){
+    while(true){
+        internal_data::lines.clear();
+        std::string line;
+        std::getline(std::cin, line);
+        if(line == "exit" || line == "quit"){
+            break;
+        }
+
+        try{
+            std::vector<char> line_raw(line.begin(), line.end());
+            auto b = tokenize_phase2::tokenize(tokenize_phase1::tokenize(line_raw));
+            if(!parsing_phase::lines(b.begin())){
+                throw parsing_failed();
+            }
+            for(auto &i : internal_data::lines){
+                bool mod;
+                std::unique_ptr<internal_data::expr> q(i->replace(internal_data::expr::variable_map(), internal_data::assignment_table, mod));
+
+                while(true){
+                    try{
+                        int nest_level = 0;
+                        internal_data::eval(q, nest_level, true);
+                        std::cout << " = " << q->to_str() << "." << std::endl;
+                    }catch(internal_data::step_out){
+                        std::cout << " = " << q->to_str() << "." << std::endl;
+                        if(waiting() == 'c'){
+                            break;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }catch(app_exception e){
+            std::cerr << e.what() << std::endl;
+        }
+    }
+}
+
 int main(int argc, char *argv[]){
     std::setlocale(LC_CTYPE, std::locale().c_str());
 
-    program_switchs.insert("-b");
+    if(argc <= 1){
+        launch_interpreter();
+        return 0;
+    }
 
+    program_switchs.insert("-b");
     for(int i = 2; i < argc; ++i){
         std::string str(argv[i]);
         if(str == "-o"){
@@ -1009,24 +1101,23 @@ int main(int argc, char *argv[]){
         program_switchs.insert(str);
     }
 
-    if(argc <= 2 || program_switchs.find("-h") != program_switchs.end()){
+    if(program_switchs.find("-h") != program_switchs.end() || program_switchs.find("--help") != program_switchs.end()){
         std::cout << "untyped lambda calcus ver 1.0.0" << std::endl;
         std::cout << "usage:" << std::endl;
         std::cout << "  untyped_lambda ifile_path.txt {option}" << std::endl;
         std::cout << std::endl;
         std::cout << "option:" << std::endl;
         // ヘルプメッセージを表示する．
-        std::cout << "  -h: show this message." << std::endl;
-        // 各式の評価結果のみ表示する．
-        std::cout << "  -o: show only eval results." << std::endl;
+        std::cout << "  --help:" << std::endl;
+        std::cout << "      -h: show this message." << std::endl;
         // 各式の評価前の値を表示する．
-        std::cout << "  -b: show before eval of fomulas. [default]" << std::endl;
+        std::cout << "      -b: show before evaluation of fomulas. [default]" << std::endl;
+        // 各式の評価結果のみ表示する．
+        std::cout << "      -o: show only evaluation results." << std::endl;
         // 式の評価ごとに一時停止する．
-        std::cout << "  -s: every stop to eval." << std::endl << std::endl;
+        std::cout << "      -s: step evaluation." << std::endl << std::endl;
 
-        if(argc <= 2){
-            return 0;
-        }
+        return 0;
     }
 
     try{
@@ -1042,19 +1133,34 @@ int main(int argc, char *argv[]){
         bool program_swtich_s = program_switchs.find("-s") != program_switchs.end();
         bool program_swtich_b = program_switchs.find("-b") != program_switchs.end();
         for(auto &i : internal_data::lines){
-            std::unique_ptr<internal_data::expr> q(i->replace(internal_data::expr::variable_map(), internal_data::assignment_table));
-            if(program_swtich_b){
+            bool mod;
+            std::unique_ptr<internal_data::expr> q(i->replace(internal_data::expr::variable_map(), internal_data::assignment_table, mod));
+            if(program_swtich_b || program_swtich_s){
                 std::cout << i->to_str() << std::endl;
+                if(program_swtich_s){
+                    waiting();
+                }
             }
-            int nest_level = 0;
-            internal_data::eval(q, nest_level);
-            if(program_swtich_b){
+            if(program_swtich_s){
+                while(true){
+                    try{
+                        int nest_level = 0;
+                        internal_data::eval(q, nest_level, true);
+                    }catch(internal_data::step_out){
+                        std::cout << q->to_str() << "." << std::endl;
+                        waiting();
+                        continue;
+                    }
+                    break;
+                }
+            }else{
+                int nest_level = 0;
+                internal_data::eval(q, nest_level);
+            }
+            if(program_swtich_b || program_swtich_s){
                 std::cout << "-> ";
             }
             std::cout << q->to_str() << "." << std::endl;
-            if(program_swtich_s){
-                getch();
-            }
         }
     }catch(app_exception e){
         std::cerr << e.what() << std::endl;
