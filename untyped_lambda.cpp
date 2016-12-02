@@ -746,239 +746,9 @@ namespace internal_data{
                 return false;
             }
         }
-    }
 
-    void eval2(std::unique_ptr<expr> &e, bool recursive_lambda, bool &mod, bool step);
-
-    template<bool DisNest>
-    void eval_sequence(std::unique_ptr<expr> &e, bool recursive_lambda, bool &mod, bool step){
-        while(true){
-            sequence *seq = static_cast<sequence*>(e.get());
-            if(DisNest){
-                if(seq->vec.size() == 1){
-                    e.swap(seq->vec[0]);
-                    if(e->get_kind() == expr::kind::sequence){
-                        continue;
-                    }else{
-                        break;
-                    }
-                }
-            }
-
-            // 先頭だけ評価する
-            {
-                expr::variable_map map;
-                bool mod_prime = false;
-                seq->vec[0].reset(seq->vec[0]->replace(map, assignment_table, mod_prime));
-                //if(step && mod){
-                //    throw step_out();
-                //}
-            }
-            //eval2(seq->vec[0], false, step);
-            if(seq->vec[0]->get_kind() == expr::kind::sequence){
-                eval_sequence<true>(seq->vec[0], false, mod, step);
-            }
-
-            if(seq->vec[0]->get_kind() == expr::kind::lambda){
-                lambda &lam = *static_cast<lambda*>(seq->vec[0].get());
-                // 引数を食べる
-                std::size_t s = (std::min)(lam.variable_seq.size(), seq->vec.size() - 1);
-                expr::variable_map map;
-                if(lam.variable_seq.size() <= s){
-                    // seqが0以上余るとき
-                    for(std::size_t i = 0; i < lam.variable_seq.size(); ++i){
-                        map.insert(std::make_pair(lam.variable_seq[i].str, seq->vec[i + 1].get()));
-                    }
-                    {
-                        expr *f = lam.seq->replace(map, assignment_table, mod);
-                        seq->vec.erase(seq->vec.begin(), seq->vec.begin() + s + 1);
-                        seq->vec.insert(seq->vec.begin(), std::move(std::unique_ptr<expr>(f)));
-                    }
-                    if(seq->vec.size() > 1){
-                        if(step && mod){
-                            throw step_out();
-                        }
-                        if(mod){
-                            break;
-                        }
-                        continue;
-                    }else{
-                        std::unique_ptr<expr> f(std::move(*seq->vec.begin()));
-                        *seq->vec.begin() = nullptr;
-                        e.swap(f);
-                        eval2(e, recursive_lambda, mod, step);
-                        if(step && mod){
-                            throw step_out();
-                        }
-                        break;
-                    }
-                }else{
-                    // seq全体を消費してもまだ食べられるとき
-                    if(s > 0){
-                        for(std::size_t i = 0; i < s; ++i){
-                            map.insert(std::make_pair(lam.variable_seq[i].str, seq->vec[i + 1].get()));
-                        }
-                        std::unique_ptr<expr> f(lam.seq->replace(map, assignment_table, mod));
-                        if(f->get_kind() == expr::kind::sequence){
-                            lam.seq.swap(f);
-                        }else{
-                            lam.get_seq()->vec.clear();
-                            lam.get_seq()->vec.push_back(std::move(f));
-                        }
-                        lam.variable_seq.erase(lam.variable_seq.begin(), lam.variable_seq.begin() + s);
-                    }
-                    e.swap(seq->vec[0]);
-                    if(s > 0 && step){
-                        throw step_out();
-                    }
-                    break;
-                }
-            }else{
-                // 先頭を評価した後、先頭がラムダじゃなかった場合
-                for(std::size_t i = 1; i < seq->vec.size(); ++i){
-                    eval2(seq->vec[i], true, mod, step);
-                    if(mod){
-                        break;
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    void eval_lambda(std::unique_ptr<expr> &e, bool recursive_lambda, bool &mod, bool step){
-        if(!recursive_lambda){
-            return;
-        }
-        lambda *lam = static_cast<lambda*>(e.get());
-        eval_sequence<false>(lam->seq, recursive_lambda, mod, step);
-        if(lam->seq->get_kind() != expr::kind::sequence){
-            std::unique_ptr<expr> seq(new sequence);
-            static_cast<sequence*>(seq.get())->vec.push_back(std::move(static_cast<lambda*>(e.get())->seq));
-            lam->seq.swap(seq);
-        }
-    }
-
-    void eval2(std::unique_ptr<expr> &e, bool recursive_lambda, bool &mod, bool step){
-        if(e->get_kind() == expr::kind::sequence){
-            eval_sequence<true>(e, recursive_lambda, mod, step);
-        }else if(e->get_kind() == expr::kind::lambda){
-            eval_lambda(e, recursive_lambda, mod, step);
-        }
-    }
-
-    bool eval(std::unique_ptr<expr> &e, int &nest_level, bool step = false){
-        bool mod = false;
-        if(e->get_kind() == expr::kind::sequence){
-            while(true){
-                sequence *seq = static_cast<sequence*>(e.get());
-                expr::kind kind = seq->vec[0]->get_kind();
-                if(kind == expr::kind::lambda){
-                    lambda &lam = static_cast<lambda&>(*static_cast<lambda*>(seq->vec[0].get()));
-                    std::unique_ptr<expr> &lam_expr = seq->vec[0];
-                    std::size_t s = (std::min)(lam.variable_seq.size(), seq->vec.size() - 1);
-                    expr::variable_map map;
-                    if(lam.variable_seq.size() <= s){
-                        for(std::size_t i = 0; i < lam.variable_seq.size(); ++i){
-                            map.insert(std::make_pair(lam.variable_seq[i].str, seq->vec[i + 1].get()));
-                        }
-                        {
-                            expr *f = lam.seq->replace(map, assignment_table, mod);
-                            seq->vec.erase(seq->vec.begin(), seq->vec.begin() + s + 1);
-                            seq->vec.insert(seq->vec.begin(), std::move(std::unique_ptr<expr>(f)));
-                        }
-                        if(step && mod){
-                            throw step_out();
-                        }
-                        if(seq->vec.size() > 1){
-                            continue;
-                        }else{
-                            std::unique_ptr<expr> f(std::move(*seq->vec.begin()));
-                            *seq->vec.begin() = nullptr;
-                            e.swap(f);
-                            if(eval(e, nest_level, step)){
-                                if(step){
-                                    throw step_out();
-                                }
-                                mod = false;
-                            }
-                            break;
-                        }
-                    }else{
-                        for(std::size_t i = 0; i < s; ++i){
-                            map.insert(std::make_pair(lam.variable_seq[i].str, seq->vec[i + 1].get()));
-                        }
-                        std::unique_ptr<expr> f(lam.seq->replace(map, assignment_table, mod));
-                        if(f->get_kind() == expr::kind::sequence){
-                            lam.seq.swap(f);
-                        }else{
-                            lam.get_seq()->vec.clear();
-                            lam.get_seq()->vec.push_back(std::move(f));
-                        }
-                        lam.variable_seq.erase(lam.variable_seq.begin(), lam.variable_seq.begin() + s);
-                        e.swap(lam_expr);
-                        if(s > 0 && step){
-                            throw step_out();
-                        }
-                        break;
-                    }
-                }else if(kind == expr::kind::sequence){
-                    std::unique_ptr<expr> &f(seq->vec[0]);
-                    ++nest_level;
-                    if(eval(f, nest_level, step)){
-                        if(step){
-                            throw step_out();
-                        }
-                    }
-                    --nest_level;
-                    std::unique_ptr<expr> tmp(f->copy());
-                    seq->vec[0].swap(tmp);
-                    if(seq->vec[0]->get_kind() == expr::kind::lambda){
-                        continue;
-                    }else{
-                        break;
-                    }
-                }else{
-                    if(seq->vec.size() == 1){
-                        std::unique_ptr<expr> f(nullptr);
-                        seq->vec[0].swap(f);
-                        e.swap(f);
-                    }
-                    break;
-                }
-            }
-            if(e->get_kind() == expr::kind::sequence){
-                sequence *seq = static_cast<sequence*>(e.get());
-                if(seq->vec.size() > 1){
-                    for(auto iter = seq->vec.begin(); iter != seq->vec.end(); ++iter){
-                        ++nest_level;
-                        if(eval(*iter, nest_level, step)){
-                            if(step){
-                                throw step_out();
-                            }
-                        }
-                        --nest_level;
-                    }
-                }else{
-                    e.swap(*seq->vec.begin());
-                }
-            }
-        }else if(e->get_kind() == expr::kind::lambda){
-            lambda *lam = static_cast<lambda*>(e.get());
-            ++nest_level;
-            if(eval(lam->seq, nest_level, step)){
-                if(step){
-                    throw step_out();
-                }
-            }
-            --nest_level;
-            if(lam->seq->get_kind() != expr::kind::sequence){
-                std::unique_ptr<expr> seq(new sequence);
-                static_cast<sequence*>(seq.get())->vec.push_back(std::move(static_cast<lambda*>(e.get())->seq));
-                lam->seq.swap(seq);
-            }
-        }
-        return mod;
+        // unreached point.
+        return false;
     }
 
     std::vector<std::unique_ptr<expr>> lines;
@@ -1277,12 +1047,15 @@ void launch_interpreter(){
             for(auto &i : internal_data::lines){
                 bool mod;
                 std::unique_ptr<internal_data::expr> q(i->replace(internal_data::expr::variable_map(), internal_data::assignment_table, mod));
+                internal_data::global_variable_replace(q);
 
                 while(true){
                     try{
                         int nest_level = 0;
-                        internal_data::eval(q, nest_level, true);
-                        std::cout << " = " << q->to_str() << "." << std::endl;
+                        if(internal_data::lo_most_reduction(q)){
+                            std::cout << " = " << q->to_str() << "." << std::endl;
+                            throw internal_data::step_out();
+                        }
                     }catch(internal_data::step_out){
                         std::cout << " = " << q->to_str() << "." << std::endl;
                         if(waiting() == 'c'){
